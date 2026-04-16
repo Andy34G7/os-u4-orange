@@ -65,3 +65,63 @@ The implementation was verified with the object tests, tree tests, and the full 
 ## Notes
 
 The screenshots show the staged repository workflow, object storage layout, tree serialization output, commit history, reference chain, and the final integration test run.
+
+## Analysis Answers
+
+### Q5.1 Branching And Checkout
+
+To implement pes checkout \<branch>, these updates are needed:
+
+- Validate that .pes/refs/heads/\<branch> exists.
+- Update .pes/HEAD to point to that branch reference.
+- Read the target commit hash from .pes/refs/heads/\<branch>.
+- Load the target commit tree and rewrite the working directory to match it.
+- Update .pes/index to match the checked-out tree.
+
+The hard part is the working directory update. Files can be added, removed, modified, or conflict with local edits. The command must avoid destroying uncommitted work.
+
+### Q5.2 Dirty Working Directory Detection
+
+A safe check can be done in three comparisons:
+
+1. Compare current working files with .pes/index using metadata and content hash when needed.
+2. Compare current branch tree with target branch tree to find paths that differ between branches.
+3. If any path is both locally modified and branch-different, abort checkout.
+
+This blocks destructive overwrites and keeps behavior consistent with Git-like safety rules.
+
+### Q5.3 Detached HEAD
+
+Detached HEAD means HEAD points directly to a commit hash, not a branch file. New commits still work, but they are not attached to a named branch pointer. If the user moves away, those commits can become hard to find.
+
+Recovery options:
+
+- Create a new branch at that commit hash.
+- Move an existing branch ref to that commit hash.
+
+As long as the hash is known from log or object walk, the commits can be preserved.
+
+### Q6.1 Garbage Collection Algorithm
+
+A mark-and-sweep approach works:
+
+1. Start from all branch heads in .pes/refs/heads.
+2. Walk each reachable commit.
+3. For each commit, mark its tree and parent commit.
+4. For each tree, recursively mark child trees and blobs.
+5. After marking, scan .pes/objects and delete unmarked objects.
+
+Use a hash set for marked object IDs for fast O(1) membership checks.
+
+For 100,000 commits and 50 branches, commit traversal is about 100,000 unique commits in a shared history case, plus all unique reachable trees and blobs. Exact total depends on file churn, but the visited object count can be several times the commit count.
+
+### Q6.2 GC Race Condition With Commit
+
+GC is unsafe during commit without coordination. A race can happen like this:
+
+- Commit process writes new blob/tree objects first.
+- Before branch ref is updated, GC scans refs and does not see those new objects as reachable.
+- GC deletes them.
+- Commit then writes a commit object pointing to missing data.
+
+Git avoids this using lock files, atomic ref updates, and conservative GC rules that avoid deleting recent loose objects immediately. In practice, write operations and GC are coordinated so objects are not collected between object creation and ref publication.
